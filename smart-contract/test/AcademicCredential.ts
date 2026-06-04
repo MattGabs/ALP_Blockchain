@@ -1,140 +1,123 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { network } from "hardhat";
-import { parseEther } from "viem";
 
-describe("EduVerify: AcademicCredential Multi-Institution & DID SBT Testing", async function () {
+describe("AcademicCredential Testing (Viem & Node Native)", async function () {
   const { viem } = await network.create();
 
-  // Helper function untuk otomasi deploy dan penyiapan aktor/wallet
-  async function deployContracts() {
-    const publicClient = await viem.getPublicClient();
-    const walletClients = await viem.getWalletClients();
-    
-    // Alokasi wallet berdasarkan hierarki arsitektur baru
-    const adminPusat = walletClients[0];   // Deployer (Kementerian)
-    const universitas = walletClients[1];  // Institusi Pendidikan
-    const mahasiswa = walletClients[2];    // Pemilik Ijazah (Holder)
-    const pihakKetiga = walletClients[3];  // HRD / Hacker / Wallet Lain
+  async function deployFixture() {
+    // Mendapatkan simulasi akun (wallets)
+    const clients = await viem.getWalletClients();
+    const admin = clients[0];
+    const institution = clients[1];
+    const student = clients[2];
+    const hacker = clients[3];
 
-    const contractRaw = await viem.deployContract("AcademicCredential");
-    const contract = contractRaw as any;
+    // Deploy kontrak
+    const academicCredential = await viem.deployContract("AcademicCredential");
 
-    return { contract, adminPusat, universitas, mahasiswa, pihakKetiga, publicClient };
+    return { academicCredential, admin, institution, student, hacker };
   }
 
-  // =========================================================================
-  // 3 POSITIVE CASES (SKENARIO SUKSES)
-  // =========================================================================
+  describe("Kasus Positif (Berhasil)", () => {
+    it("1. Admin berhasil menambahkan alamat institusi", async function () {
+      const { academicCredential, admin, institution } = await deployFixture();
 
-  it("Positive Case 1: Admin Pusat harus berhasil mendaftarkan Institusi baru", async function () {
-    const { contract, adminPusat, universitas } = await deployContracts();
-    const namaKampus = "Universitas Surabaya";
+      // Transaksi write (butuh menentukan account siapa yang mengeksekusi)
+      await academicCredential.write.addInstitution(
+        [institution.account.address, "Universitas A"],
+        { account: admin.account }
+      );
 
-    // Admin mendaftarkan universitas 
-    await contract.write.addInstitution([universitas.account.address, namaKampus], {
-      account: adminPusat.account
+      // Transaksi read
+      const isInstitution = await academicCredential.read.institutions([institution.account.address]);
+      
+      assert.equal(isInstitution, true);
     });
 
-    // Ambil data institusi dari public mapping 
-    const res = await contract.read.institutions([universitas.account.address]) as [string, boolean];
-    const [name, isActive] = res;
+    it("2. Institusi terdaftar berhasil menerbitkan ijazah (SBT)", async function () {
+      const { academicCredential, admin, institution, student } = await deployFixture();
 
-    assert.equal(name, namaKampus);
-    assert.equal(isActive, true);
-  });
+      // Setup: Admin menambahkan institusi
+      await academicCredential.write.addInstitution(
+        [institution.account.address, "Universitas A"],
+        { account: admin.account }
+      );
 
-  it("Positive Case 2: Institusi aktif harus sukses menerbitkan kredensial (DID & State Check)", async function () {
-    const { contract, adminPusat, universitas, mahasiswa } = await deployContracts();
-    const ipfsURI = "ipfs://bafybeic-ijazah-kumaro";
+      const tokenURI = "ipfs://dokumen-ijazah-dummy";
+      
+      // Institusi menerbitkan SBT
+      await academicCredential.write.issueCredential(
+        [student.account.address, tokenURI],
+        { account: institution.account }
+      );
 
-    // 1. Daftarkan dulu universitas agar aktif 
-    await contract.write.addInstitution([universitas.account.address, "Airlangga University"], {
-      account: adminPusat.account
+      // Cek pemilik ID token 0 (Di Viem, parameter angka besar harus format BigInt/0n)
+      const owner = await academicCredential.read.ownerOf([0n]);
+      
+      // Pastikan alamat sesuai
+      assert.equal(owner.toLowerCase(), student.account.address.toLowerCase());
     });
 
-    // 2. Universitas menerbitkan ijazah ke mahasiswa 
-    await contract.write.issueCredential([mahasiswa.account.address, ipfsURI], {
-      account: universitas.account
+    it("3. Institusi berhasil membatalkan (revoke) ijazah", async function () {
+      const { academicCredential, admin, institution, student } = await deployFixture();
+
+      // Setup
+      await academicCredential.write.addInstitution([institution.account.address, "Universitas A"], { account: admin.account });
+      await academicCredential.write.issueCredential([student.account.address, "ipfs://dokumen-ijazah-dummy"], { account: institution.account });
+
+      // Institusi membatalkan ijazah ID 0
+      await academicCredential.write.revokeCredential([0n], { account: institution.account });
+
+      // Cek validasi
+      const isValid = await academicCredential.read.isValidCredential([0n]);
+      
+      assert.equal(isValid, false);
+    });
+  });
+
+  describe("Kasus Negatif (Gagal / Revert)", () => {
+    it("1. Gagal menambahkan institusi jika diakses oleh selain Admin", async function () {
+      const { academicCredential, hacker, institution } = await deployFixture();
+
+      // Menggunakan assert.rejects untuk memastikan fungsi gagal (revert)
+      await assert.rejects(
+        academicCredential.write.addInstitution(
+          [institution.account.address, "Universitas Palsu"],
+          { account: hacker.account } // Dieksekusi oleh hacker
+        ),
+        (err: any) => err.message.includes("Akses ditolak: Hanya untuk Admin")
+      );
     });
 
-    // 3. Ambil data ijazah & status DID 
-    const tokenOwner = (await contract.read.ownerOf([0n])) as string;
-    const isValid = (await contract.read.isValidCredential([0n])) as boolean;
-    const studentSBTList = (await contract.read.getStudentCredential([mahasiswa.account.address])) as bigint[];
+    it("2. Gagal menerbitkan ijazah jika dilakukan oleh institusi tidak terdaftar", async function () {
+      const { academicCredential, hacker, student } = await deployFixture();
 
-    assert.equal(tokenOwner.toLowerCase(), mahasiswa.account.address.toLowerCase());
-    assert.equal(isValid, true);
-    assert.equal(studentSBTList.length, 1);
-    assert.equal(studentSBTList[0], 0n);
-  });
-
-  it("Positive Case 3: Institusi harus bisa melakukan Revocation (Pencabutan) terhadap ijazah yang bermasalah", async function () {
-    const { contract, adminPusat, universitas, mahasiswa } = await deployContracts();
-    
-    await contract.write.addInstitution([universitas.account.address, "ITS"], { account: adminPusat.account });
-    await contract.write.issueCredential([mahasiswa.account.address, "ipfs://ijazah-salah"], { account: universitas.account });
-
-    // Pastikan sebelum dicabut statusnya valid 
-    assert.equal((await contract.read.isValidCredential([0n])) as boolean, true);
-
-    // Universitas mencabut ijazah (Token ID 0) 
-    await contract.write.revokeCredential([0n], {
-      account: universitas.account
+      // Hacker (bukan institusi) mencoba menerbitkan
+      await assert.rejects(
+        academicCredential.write.issueCredential(
+          [student.account.address, "ipfs://fake-uri"],
+          { account: hacker.account }
+        ),
+        (err: any) => err.message.includes("Akses ditolak: Bukan institusi pendidikan terdaftar")
+      );
     });
 
-    // Status validasi ijazah harus berubah menjadi false 
-    const isValidPostRevoke = (await contract.read.isValidCredential([0n])) as boolean;
-    assert.equal(isValidPostRevoke, false);
-  });
+    it("3. Gagal memindahtangankan ijazah (Memastikan fitur Soulbound Token berjalan)", async function () {
+      const { academicCredential, admin, institution, student, hacker } = await deployFixture();
 
+      // Setup
+      await academicCredential.write.addInstitution([institution.account.address, "Universitas A"], { account: admin.account });
+      await academicCredential.write.issueCredential([student.account.address, "ipfs://dokumen-ijazah-dummy"], { account: institution.account });
 
-  // =========================================================================
-  // 3 NEGATIVE CASES (SKENARIO GAGAL / REVERT CONTROL)
-  // =========================================================================
-
-  it("Negative Case 1: Harus menolak (revert) jika selain Admin mencoba mendaftarkan Institusi", async function () {
-    const { contract, universitas, pihakKetiga } = await deployContracts();
-
-    // Pihak ketiga menembak fungsi addInstitution, harus digagalkan oleh modifier onlyAdmin 
-    await assert.rejects(
-      contract.write.addInstitution([universitas.account.address, "Kampus Ilegal"], {
-        account: pihakKetiga.account
-      }),
-      /SBT Error: Hanya Admin Pusat yang memiliki akses!/
-    );
-  });
-
-  it("Negative Case 2: Harus menolak jika Institusi yang sudah dicabut haknya (Non-Aktif) mencoba mencetak ijazah", async function () {
-    const { contract, adminPusat, universitas, mahasiswa } = await deployContracts();
-
-    // 1. Daftarkan institusi 
-    await contract.write.addInstitution([universitas.account.address, "Petra"], { account: adminPusat.account });
-    
-    // 2. Cabut hak akses institusi tersebut 
-    await contract.write.removeInstitution([universitas.account.address], { account: adminPusat.account });
-
-    // 3. Coba mencetak ijazah, harus gagal karena modifier onlyInstitution 
-    await assert.rejects(
-      contract.write.issueCredential([mahasiswa.account.address, "ipfs://ijazah-ilegal"], {
-        account: universitas.account
-      }),
-      /SBT Error: Hanya Institusi terdaftar yang memiliki akses!/
-    );
-  });
-
-  it("Negative Case 3: KUNCI MATI SOULBOUND - Harus menggagalkan total segala upaya transfer token dari sisi publik", async function () {
-    const { contract, adminPusat, universitas, mahasiswa, pihakKetiga } = await deployContracts();
-
-    await contract.write.addInstitution([universitas.account.address, "Ciputra"], { account: adminPusat.account });
-    await contract.write.issueCredential([mahasiswa.account.address, "ipfs://ijazah-asli"], { account: universitas.account });
-
-    // Simulasikan mahasiswa mencoba memanggil transferFrom publik ke pihakKetiga 
-    await assert.rejects(
-      contract.write.transferFrom([mahasiswa.account.address, pihakKetiga.account.address, 0n], {
-        account: mahasiswa.account
-      }),
-      /SBT Error: Token ini bersifat Soulbound. Kredensial akademik tidak dapat ditransfer!/
-    );
+      // Mahasiswa (student) mencoba mentransfer ijazah ID 0 ke wallet hacker
+      await assert.rejects(
+        academicCredential.write.transferFrom(
+          [student.account.address, hacker.account.address, 0n],
+          { account: student.account }
+        ),
+        (err: any) => err.message.includes("Soulbound Token: Ijazah tidak dapat dipindahtangankan")
+      );
+    });
   });
 });

@@ -1,151 +1,187 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.28;
+pragma solidity ^0.8.20;
 
-import "./ERC721.sol";
+import "@openzeppelin/contracts/token/ERC721/extensions/ERC721URIStorage.sol";
 
-contract AcademicCredential is ERC721 {
-    uint256 private _nextTokenId;
-    
-    // Alamat wallet Admin Pusat / Kementerian (Deployer Kontrak)
+contract AcademicCredential is ERC721URIStorage {
     address public admin;
+    uint256 private _nextTokenId;
 
-    // --- STRUCT & MAPPING UNTUK DID & INSTITUSI ---
-    struct Institution {
+     struct Institution {
         string name;
-        bool isActive;
+        string accreditation;
+        string email;
+        address wallet;
+        bool isRegistered;
+        uint256 registeredAt;
     }
 
-    // Mapping Alamat Universitas => Data Institusi
+    struct Student {
+        string fullName;
+        string studentId;
+        string major;
+        uint256 enrollmentYear;
+        address wallet;
+        bool exists;
+    }
+
+    struct Credential {
+        uint256 tokenId;
+        string credentialType;     // Diploma, Certificate, Transcript
+        string title;              // Bachelor of Computer Science
+        string grade;              // GPA / Grade
+        uint256 issueDate;
+        address institution;
+        address student;
+        bool revoked;
+    }
+
+    // MAPPINGS & DATA STORAGE
     mapping(address => Institution) public institutions;
-    
-    // Mapping Token ID => Link Metadata IPFS Ijazah
-    mapping(uint256 => string) private _tokenURIs;
-    
-    // Mapping Token ID => Status Validasi (True jika aktif, False jika di-revoke)
-    mapping(uint256 => bool) private _isValid;
+    mapping(address => Student) public students;
+    mapping(uint256 => Credential) public credentials;
+    mapping(address => uint256[]) private studentCredentials;
 
-    // Mapping Alamat Mahasiswa => Daftar Token ID Ijazah yang dimiliki
-    mapping(address => uint256[]) private _studentCredentials;
-
-    // --- EVENTS ---
+    // EVENTS
     event InstitutionAdded(address indexed institution, string name);
     event InstitutionRemoved(address indexed institution);
-    event CredentialIssued(uint256 indexed tokenId, address indexed student, string tokenURI, address indexed issuer);
-    event CredentialRevoked(uint256 indexed tokenId, address indexed issuer);
+    event StudentRegistered(address indexed student, string fullName, string studentId);
+    event CredentialIssued(uint256 indexed tokenId, address indexed student, string credentialType, string title);
+    event CredentialRevoked(uint256 indexed tokenId);
 
-    // --- MODIFIERS ---
-    // Membatasi akses hanya untuk Admin Pusat (Kementerian)
+    // MODIFIERS
     modifier onlyAdmin() {
-        require(msg.sender == admin, "SBT Error: Hanya Admin Pusat yang memiliki akses!");
+        require(msg.sender == admin, "Akses ditolak: Hanya untuk Admin");
         _;
     }
 
-    // Membatasi akses hanya untuk Universitas yang terdaftar dan aktif
     modifier onlyInstitution() {
-        require(institutions[msg.sender].isActive, "SBT Error: Hanya Institusi terdaftar yang memiliki akses!");
+        // Pengecekan hak akses dialihkan ke status isRegistered di dalam struct Institution
+        require(institutions[msg.sender].isRegistered, "Akses ditolak: Bukan institusi pendidikan terdaftar");
         _;
     }
 
-    // Inisialisasi Nama & Simbol NFT, serta mengunci akun Deployer sebagai Admin Pusat
-    constructor() ERC721("EduVerify Academic Certificate", "EDUSBT") {
-        admin = msg.sender;
+    constructor() ERC721("AcademicCredentialSBT", "ACSBT") {
+        admin = msg.sender; 
     }
 
-    // --- 7 FUNGSI WAJIB BERDASARKAN RANCANGAN ---
+    // =====================================================
+    // FUNCTIONS
+    // =====================================================
 
-    // 1. Menambahkan universitas baru ke dalam sistem DID (Hanya Admin Pusat)
-    function addInstitution(address _institution, string calldata _name) external onlyAdmin {
-        require(_institution != address(0), "SBT Error: Alamat institusi tidak valid");
-        require(bytes(_name).length > 0, "SBT Error: Nama institusi tidak boleh kosong");
-        
+    // 1. Menambahkan alamat universitas dan mengisi data profil lengkapnya [cite: 33, 50]
+    function addInstitution(
+        address _institution, 
+        string calldata _name,
+        string calldata _accreditation,
+        string calldata _email
+    ) external onlyAdmin {
         institutions[_institution] = Institution({
             name: _name,
-            isActive: true
+            accreditation: _accreditation,
+            email: _email,
+            wallet: _institution,
+            isRegistered: true,
+            registeredAt: block.timestamp
         });
-
         emit InstitutionAdded(_institution, _name);
     }
 
-    // 2. Mencabut hak akses universitas agar tidak bisa menerbitkan ijazah lagi (Hanya Admin Pusat)
-    function removeInstitution(address _institution) external onlyAdmin {
-        require(institutions[_institution].isActive, "SBT Error: Institusi tidak terdaftar atau sudah tidak aktif");
-        
-        institutions[_institution].isActive = false;
 
+    // 2. Mencabut hak akses universitas [cite: 51, 52]
+    function removeInstitution(address _institution) external onlyAdmin {
+        institutions[_institution].isRegistered = false;
         emit InstitutionRemoved(_institution);
     }
 
-    // 3. Menerbitkan ijazah (SBT) ke wallet mahasiswa (Hanya Universitas yang Aktif)
-    function issueCredential(address _student, string calldata _tokenURI) external onlyInstitution returns (uint256) {
-        require(_student != address(0), "SBT Error: Alamat mahasiswa tidak valid");
-        require(bytes(_tokenURI).length > 0, "SBT Error: URI metadata tidak boleh kosong");
+    function registerStudent(
+        address _student,
+        string calldata _fullName,
+        string calldata _studentId,
+        string calldata _major,
+        uint256 _enrollmentYear
+    ) external onlyInstitution {
+        students[_student] = Student({
+            fullName: _fullName,
+            studentId: _studentId,
+            major: _major,
+            enrollmentYear: _enrollmentYear,
+            wallet: _student,
+            exists: true
+        });
+        emit StudentRegistered(_student, _fullName, _studentId);
+    }
+
+    // 3. Menerbitkan SBT ke wallet mahasiswa sekaligus mencatat metadata akademiknya 
+    function issueCredential(
+        address _student, 
+        string calldata _credentialType,
+        string calldata _title,
+        string calldata _grade,
+        string calldata _tokenURI
+    ) external onlyInstitution {
+        // Jika mahasiswa belum sempat didaftarkan via registerStudent, buat data fallback dasar
+        if (!students[_student].exists) {
+            students[_student].wallet = _student;
+            students[_student].exists = true;
+        }
 
         uint256 tokenId = _nextTokenId++;
+        _mint(_student, tokenId);
+        _setTokenURI(tokenId, _tokenURI);
         
-        // Panggil fungsi pembukuan internal dari ERC721.sol
-        _update(_student, tokenId);
-        
-        // Simpan data ijazah ke storage
-        _tokenURIs[tokenId] = _tokenURI;
-        _isValid[tokenId] = true;
-        _studentCredentials[_student].push(tokenId);
+        // Mengisi data ke dalam struct Credential
+        credentials[tokenId] = Credential({
+            tokenId: tokenId,
+            credentialType: _credentialType,
+            title: _title,
+            grade: _grade,
+            issueDate: block.timestamp,
+            institution: msg.sender,
+            student: _student,
+            revoked: false
+        });
 
-        emit CredentialIssued(tokenId, _student, _tokenURI, msg.sender);
-        return tokenId;
+        studentCredentials[_student].push(tokenId);
+        
+        emit CredentialIssued(tokenId, _student, _credentialType, _title);
     }
 
-    // 4. Membatalkan/menarik ijazah jika terjadi kesalahan fatal (Hanya Universitas yang menerbitkan)
+    // 4. Membatalkan/menarik ijazah dengan mengubah status revoked di dalam struct 
     function revokeCredential(uint256 _tokenId) external onlyInstitution {
-        require(_owners[_tokenId] != address(0), "SBT Error: Kredensial tidak ditemukan");
-        require(_isValid[_tokenId], "SBT Error: Kredensial sudah dicabut sebelumnya");
+        require(_ownerOf(_tokenId) != address(0), "Ijazah tidak ditemukan");
+        // Memastikan hanya universitas yang menerbitkannya yang boleh membatalkannya
+        require(credentials[_tokenId].institution == msg.sender, "Akses ditolak: Bukan penerbit ijazah ini");
         
-        // Opsional: Validasi tambahan agar hanya universitas yang dulu mencetak yang bisa mencabut ijazah ini bisa dikembangkan,
-        // namun untuk skala tugas kuliah, hak akses 'onlyInstitution' sudah sangat kuat.
-        _isValid[_tokenId] = false;
-
-        emit CredentialRevoked(_tokenId, msg.sender);
+        credentials[_tokenId].revoked = true;
+        
+        emit CredentialRevoked(_tokenId);
     }
 
-    // 5. Fungsi view untuk pihak ketiga (HRD) mengecek keabsahan ijazah secara instan
-    function isValidCredential(uint256 _tokenId) public view returns (bool) {
-        if (_owners[_tokenId] == address(0)) {
-            return false; // Ijazah tidak ada
+    // 5. Fungsi view untuk mengecek status validasi ijazah 
+    function isValidCredential(uint256 _tokenId) external view returns (bool) {
+        return _ownerOf(_tokenId) != address(0) && !credentials[_tokenId].revoked;
+    }
+
+    // 6. Fungsi view untuk mendapatkan daftar ID ijazah yang dimiliki mahasiswa 
+    function getStudentCredential(address _student) external view returns (uint256[] memory) {
+        return studentCredentials[_student];
+    }
+
+    // Mengambil data objek Credential utuh untuk kebutuhan read Frontend/Verifikator
+    function getCredentialDetails(uint256 _tokenId) external view returns (Credential memory) {
+        require(_ownerOf(_tokenId) != address(0), "Ijazah tidak ditemukan");
+        return credentials[_tokenId];
+    }
+
+    // 7. SOULBOUND TOKEN (SBT) LOGIC (Memblokir fitur transfer) 
+    function _update(address to, uint256 tokenId, address auth) internal virtual override returns (address) {
+        address from = _ownerOf(tokenId);
+        
+        if (from != address(0) && to != address(0)) {
+            revert("Soulbound Token: Ijazah tidak dapat dipindahtangankan");
         }
-        return _isValid[_tokenId]; // Mengembalikan status aktif/revoke
-    }
-
-    // 6. Mendapatkan daftar seluruh ID ijazah yang dimiliki seorang mahasiswa (Untuk Wallet App)
-    function getStudentCredential(address _student) public view returns (uint256[] memory) {
-        require(_student != address(0), "SBT Error: Alamat query tidak valid");
-        return _studentCredentials[_student];
-    }
-
-    // 7. OVERRIDE FUNGSI TRANSFER PUBLIK (Paling Penting untuk Kunci Soulbound)
-    // Di file ERC721.sol buatanmu mungkin belum mengekspos transferFrom publik, 
-    // Kita deklarasikan di sini untuk memastikan jika ada aplikasi luar mencoba memaksa transfer, transaksi langsung GAGAL total.
-    function transferFrom(address from, address to, uint256 tokenId) public pure {
-        from; to; tokenId; // Menghilangkan warning compiler untuk unused variables
-        revert("SBT Error: Token ini bersifat Soulbound. Kredensial akademik tidak dapat ditransfer!");
-    }
-
-
-    // --- FUNGSI TAMBAHAN UTK SISTEM DID & KESELARASAN METADATA ---
-
-    // Mengambil metadata URI untuk verifikasi data (Nama, NIM, IPFS)
-    function tokenURI(uint256 tokenId) public view returns (string memory) {
-        require(_owners[tokenId] != address(0), "SBT Error: Kredensial tidak ditemukan");
-        return _tokenURIs[tokenId];
-    }
-
-    // INTERNAL HOOK OVERRIDE: Pencegahan transfer pada level internal Solidity
-    function _update(address to, uint256 tokenId) internal override {
-        address from = _owners[tokenId];
-
-        // Jika token sudah punya pemilik (bukan proses minting awal dari 0x0), gagalkan!
-        if (from != address(0)) {
-            revert("SBT Error: Token ini bersifat Soulbound. Kredensial tidak dapat ditransfer!");
-        }
-
-        super._update(to, tokenId);
+        
+        return super._update(to, tokenId, auth);
     }
 }
