@@ -1,122 +1,136 @@
-import { useState } from 'react'
-import reactLogo from './assets/react.svg'
-import viteLogo from './assets/vite.svg'
-import heroImg from './assets/hero.png'
-import './App.css'
+import { useState } from 'react';
+import AdminDashboard from './components/AdminDashboard';
+import InstitutionDashboard from './components/InstitutionDashboard';
+import StudentDashboard from './components/StudentDashboard';
+import VerifierDashboard from './components/VerifierDashboard'; 
+
+const ADMIN_WALLET = "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266".toLowerCase();
 
 function App() {
-  const [count, setCount] = useState(0)
+  const [account, setAccount] = useState(null);
+  const [role, setRole] = useState(null);
+  const [profile, setProfile] = useState(null);
+  const [loading, setLoading] = useState(false);
+  
+  // State khusus untuk layar Verifikator (Publik)
+  const [isVerifier, setIsVerifier] = useState(false);
+
+  const checkUserRole = async (walletAddress) => {
+    setLoading(true);
+    const normalizedWallet = walletAddress.toLowerCase();
+
+    try {
+      if (normalizedWallet === ADMIN_WALLET) {
+        setRole('admin');
+        setProfile({ name: "Super Administrator" });
+        setLoading(false);
+        return; 
+      }
+
+      const instResponse = await fetch(`http://localhost:5000/api/institutions/${normalizedWallet}`);
+      if (instResponse.ok) {
+        const instData = await instResponse.json();
+        if (instData.is_registered === 1) {
+          setRole('institution');
+          setProfile(instData);
+          setLoading(false);
+          return; 
+        }
+      }
+
+      const studentResponse = await fetch(`http://localhost:5000/api/students/${normalizedWallet}`);
+      if (studentResponse.ok) {
+        const studentData = await studentResponse.json();
+        setRole('student');
+        setProfile(studentData);
+        setLoading(false);
+        return; 
+      }
+
+      setRole('unregistered');
+      setProfile(null);
+
+    } catch (error) {
+      console.error("Gagal sinkronisasi dengan backend:", error);
+    }
+    setLoading(false);
+  };
+
+  const connectWallet = async () => {
+    if (window.ethereum) {
+      try {
+        const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
+        const connectedAddress = accounts[0];
+        setAccount(connectedAddress); 
+        await checkUserRole(connectedAddress);
+      } catch (error) {
+        console.error("Koneksi dibatalkan oleh pengguna", error);
+      }
+    } else {
+      alert("Tolong install ekstensi Rabby Wallet atau MetaMask!");
+    }
+  };
+
+  // Jika user memilih masuk sebagai HRD/Publik
+  if (isVerifier) {
+    return <VerifierDashboard onBack={() => setIsVerifier(false)} />;
+  }
 
   return (
-    <>
-      <section id="center">
-        <div className="hero">
-          <img src={heroImg} className="base" width="170" height="179" alt="" />
-          <img src={reactLogo} className="framework" alt="React logo" />
-          <img src={viteLogo} className="vite" alt="Vite logo" />
-        </div>
-        <div>
-          <h1>Get started</h1>
-          <p>
-            Edit <code>src/App.jsx</code> and save to test <code>HMR</code>
-          </p>
-        </div>
-        <button
-          type="button"
-          className="counter"
-          onClick={() => setCount((count) => count + 1)}
-        >
-          Count is {count}
-        </button>
-      </section>
+    <div className="flex flex-col items-center justify-center min-h-screen bg-slate-50 p-4">
+      <h1 className="text-4xl font-extrabold text-slate-800 mb-8 text-center">
+        Portal Ijazah Digital <br/> <span className="text-xl text-blue-600">Berbasis Blockchain</span>
+      </h1>
+      
+      {!account && (
+        <div className="flex flex-col gap-4 w-full max-w-xs">
+          <button onClick={connectWallet} className="px-8 py-3 bg-blue-600 text-white font-bold rounded-lg shadow hover:bg-blue-700 transition-all">
+            Login dengan Wallet
+          </button>
+          
+          <div className="flex items-center justify-center space-x-2 text-slate-400">
+            <span className="h-px bg-slate-300 w-1/4"></span>
+            <span className="text-xs">ATAU</span>
+            <span className="h-px bg-slate-300 w-1/4"></span>
+          </div>
 
-      <div className="ticks"></div>
-
-      <section id="next-steps">
-        <div id="docs">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#documentation-icon"></use>
-          </svg>
-          <h2>Documentation</h2>
-          <p>Your questions, answered</p>
-          <ul>
-            <li>
-              <a href="https://vite.dev/" target="_blank">
-                <img className="logo" src={viteLogo} alt="" />
-                Explore Vite
-              </a>
-            </li>
-            <li>
-              <a href="https://react.dev/" target="_blank">
-                <img className="button-icon" src={reactLogo} alt="" />
-                Learn more
-              </a>
-            </li>
-          </ul>
+          <button onClick={() => setIsVerifier(true)} className="px-8 py-3 bg-emerald-600 text-white font-bold rounded-lg shadow hover:bg-emerald-700 transition-all">
+            Verifikasi Ijazah (Publik)
+          </button>
         </div>
-        <div id="social">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#social-icon"></use>
-          </svg>
-          <h2>Connect with us</h2>
-          <p>Join the Vite community</p>
-          <ul>
-            <li>
-              <a href="https://github.com/vitejs/vite" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#github-icon"></use>
-                </svg>
-                GitHub
-              </a>
-            </li>
-            <li>
-              <a href="https://chat.vite.dev/" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#discord-icon"></use>
-                </svg>
-                Discord
-              </a>
-            </li>
-            <li>
-              <a href="https://x.com/vite_js" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#x-icon"></use>
-                </svg>
-                X.com
-              </a>
-            </li>
-            <li>
-              <a href="https://bsky.app/profile/vite.dev" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#bluesky-icon"></use>
-                </svg>
-                Bluesky
-              </a>
-            </li>
-          </ul>
-        </div>
-      </section>
+      )}
 
-      <div className="ticks"></div>
-      <section id="spacer"></section>
-    </>
-  )
+      {account && loading && (
+        <p className="text-slate-500 font-medium animate-pulse">Memverifikasi data profil...</p>
+      )}
+
+      {account && !loading && (
+        <div className="w-full max-w-2xl p-6 bg-white rounded-xl shadow-md border border-slate-200">
+          <div className="flex justify-between items-center mb-4">
+             <div>
+                <p className="text-xs text-slate-400 font-mono">WALLET ADDRESS:</p>
+                <p className="font-mono text-xs text-slate-700 bg-slate-100 p-2 rounded overflow-x-auto">
+                  {account}
+                </p>
+             </div>
+             <button onClick={() => window.location.reload()} className="text-xs text-red-500 hover:underline">Logout</button>
+          </div>
+
+          {/* Rendering Komponen Berdasarkan Role */}
+          {role === 'admin' && <AdminDashboard account={account} />}
+          {role === 'institution' && <InstitutionDashboard profile={profile} account={account} />}
+          {role === 'student' && <StudentDashboard profile={profile} />}
+          
+          {role === 'unregistered' && (
+            <div className="border-t pt-4 text-center">
+              <span className="px-2 py-1 bg-red-100 text-red-700 text-xs font-bold rounded">BELUM TERDAFTAR</span>
+              <p className="text-sm text-slate-600 mt-3">Alamat dompet Anda belum terdaftar di sistem kami.</p>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
 }
 
-export default App
+export default App;
